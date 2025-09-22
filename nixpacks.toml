@@ -1,8 +1,8 @@
 [phases.install]
-cmds = ["yarn install"]
+cmds = ["npm ci --no-audit --no-fund"]
 
 [phases.build]
-cmds = ["yarn build"]
+cmds = ["npm run build"]
 
 [start]
 cmd = "node dist/main"
