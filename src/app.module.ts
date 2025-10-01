@@ -3,6 +3,7 @@ import { ConfigModule, ConfigService } from '@nestjs/config';
 import { TypeOrmModule } from '@nestjs/typeorm';
 import { AppController } from './app.controller';
 import { AppService } from './app.service';
+import { JobsModule } from './jobs/jobs.module';
 
 @Module({
   imports: [
@@ -18,12 +19,14 @@ import { AppService } from './app.service';
           username: configService.get('DB_USERNAME'),
           password: configService.get('DB_PASSWORD'),
           database: configService.get('DB_DATABASE'),
-          entities: [__dirname + '/../**/*.entity{.ts,.js}'],
-          synchronize: configService.get('NODE_ENV') === 'development', // 개발환경에서만 true
+          entities: [__dirname + '/../**/*.entity.js'],
+          autoLoadEntities: true,
+          synchronize: true, // ensure schema is created (job_postings)
           logging: configService.get('NODE_ENV') === 'development',
         };
       },
     }),
+    JobsModule,
   ],
   controllers: [AppController],
   providers: [AppService],
