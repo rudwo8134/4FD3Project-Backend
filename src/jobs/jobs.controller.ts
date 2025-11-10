@@ -4,9 +4,19 @@ import {
   Query,
   Post,
   Param,
+  Body,
   BadRequestException,
+  UseInterceptors,
+  UploadedFiles,
 } from '@nestjs/common';
-import { ApiQuery, ApiTags } from '@nestjs/swagger';
+import { FilesInterceptor } from '@nestjs/platform-express';
+import {
+  ApiQuery,
+  ApiTags,
+  ApiOperation,
+  ApiBody,
+  ApiConsumes,
+} from '@nestjs/swagger';
 import { JobsService } from './jobs.service';
 
 @ApiTags('jobs')
@@ -58,5 +68,79 @@ export class JobsController {
   @Get('import/:id/status')
   async importStatus(@Param('id') id: string): Promise<any> {
     return this.jobsService.getImportStatus(id);
+  }
+
+  @Post('apply')
+  @UseInterceptors(FilesInterceptor('files'))
+  @ApiOperation({
+    summary: 'Apply to job(s)',
+    description:
+      'Apply to one or multiple jobs by job_posting_id. Extracts email from job_summary and sends application email with attachments.',
+  })
+  @ApiConsumes('multipart/form-data')
+  @ApiBody({
+    schema: {
+      type: 'object',
+      properties: {
+        job_posting_id: {
+          oneOf: [
+            { type: 'string' },
+            { type: 'array', items: { type: 'string' } },
+          ],
+          description:
+            'Single job_posting_id (string) or multiple IDs (array). For array, send as JSON string.',
+        },
+        applicant_email: {
+          type: 'string',
+          description: 'Email address of the applicant',
+        },
+        applicant_name: {
+          type: 'string',
+          description: 'Name of the applicant (optional)',
+        },
+        files: {
+          type: 'array',
+          items: {
+            type: 'string',
+            format: 'binary',
+          },
+          description: 'Files to attach (resume, cover letter, etc.)',
+        },
+      },
+      required: ['job_posting_id', 'applicant_email'],
+    },
+  })
+  async apply(
+    @Body()
+    body: {
+      job_posting_id: string | string[];
+      applicant_email: string;
+      applicant_name?: string;
+    },
+    @UploadedFiles() files?: Express.Multer.File[],
+  ) {
+    if (!body.job_posting_id) {
+      throw new BadRequestException('job_posting_id는 필수입니다.');
+    }
+
+    if (!body.applicant_email) {
+      throw new BadRequestException('applicant_email은 필수입니다.');
+    }
+
+    // Parse job_posting_id if it's a JSON string (for array support in form-data)
+    let jobPostingIds: string | string[];
+    try {
+      const parsed = JSON.parse(body.job_posting_id as string);
+      jobPostingIds = Array.isArray(parsed) ? parsed : body.job_posting_id;
+    } catch {
+      jobPostingIds = body.job_posting_id;
+    }
+
+    return this.jobsService.applyToJobs(
+      jobPostingIds,
+      body.applicant_email,
+      body.applicant_name,
+      files,
+    );
   }
 }

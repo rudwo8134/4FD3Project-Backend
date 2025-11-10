@@ -1,9 +1,10 @@
-import { Injectable } from '@nestjs/common';
+import { Injectable, BadRequestException, Logger } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
-import { Repository } from 'typeorm';
+import { Repository, In } from 'typeorm';
 import { GoogleJobsService } from './providers/google-jobs.service';
 import { JobBoardService } from './providers/job-board.service';
 import { ImportService } from './providers/import.service';
+import { EmailService } from './providers/email.service';
 import { JobPosting } from '../entities/job-posting.entity';
 import { expandTokens } from './search/synonyms';
 
@@ -14,12 +15,15 @@ export interface JobSearchParams {
 
 @Injectable()
 export class JobsService {
+  private readonly logger = new Logger(JobsService.name);
+
   constructor(
     @InjectRepository(JobPosting)
     private readonly jobPostingRepo: Repository<JobPosting>,
     private readonly googleJobs: GoogleJobsService,
     private readonly jobBoard: JobBoardService,
     private readonly importer: ImportService,
+    private readonly emailService: EmailService,
   ) {}
 
   async searchJobs(
@@ -207,5 +211,146 @@ export class JobsService {
 
   getImportStatus(id: string): any {
     return this.importer.getStatus(id);
+  }
+
+  /**
+   * Apply to jobs by job_posting_id(s)
+   * Supports both single ID (string) and multiple IDs (array of strings)
+   */
+  async applyToJobs(
+    jobPostingIds: string | string[],
+    applicantEmail: string,
+    applicantName?: string,
+    files?: Express.Multer.File[],
+  ) {
+    // Normalize to array
+    const ids = Array.isArray(jobPostingIds) ? jobPostingIds : [jobPostingIds];
+
+    if (ids.length === 0) {
+      throw new BadRequestException('job_posting_id는 필수입니다.');
+    }
+
+    if (!applicantEmail || !applicantEmail.trim()) {
+      throw new BadRequestException('applicant_email은 필수입니다.');
+    }
+
+    // Fetch job postings from database
+    const jobPostings = await this.jobPostingRepo.find({
+      where: {
+        job_posting_id: In(ids),
+      },
+    });
+
+    if (jobPostings.length === 0) {
+      throw new BadRequestException(
+        `해당 job_posting_id에 매칭되는 데이터를 찾을 수 없습니다.`,
+      );
+    }
+
+    const results = [];
+    const applicantEmailNormalized = applicantEmail.trim();
+
+    // Process each job posting
+    for (const jobPosting of jobPostings) {
+      const jobData = jobPosting.data as Record<string, any>;
+      const jobTitle = jobData.job_title || 'Unknown Position';
+      const jobSummary = jobData.job_summary || '';
+
+      // Extract emails from job_summary
+      const extractedEmails = this.emailService.extractEmails(jobSummary);
+
+      if (extractedEmails.length === 0) {
+        results.push({
+          job_posting_id: jobPosting.job_posting_id,
+          job_title: jobTitle,
+          status: 'failed',
+          reason: 'job_summary에서 이메일 주소를 찾을 수 없습니다.',
+          emails_found: [],
+        });
+        continue;
+      }
+
+      // Prepare attachments from files
+      const attachments = files
+        ? files.map((file) => ({
+            filename: file.originalname,
+            content: file.buffer,
+            contentType: file.mimetype,
+          }))
+        : undefined;
+
+      // Send emails to all found addresses
+      const emailResults = [];
+      let successCount = 0;
+
+      for (const recipientEmail of extractedEmails) {
+        try {
+          const sent = await this.emailService.sendApplicationEmail(
+            recipientEmail,
+            jobTitle,
+            applicantEmailNormalized,
+            applicantName,
+            attachments,
+          );
+
+          if (sent) {
+            successCount++;
+            emailResults.push({
+              email: recipientEmail,
+              status: 'sent',
+            });
+
+            // Send confirmation email to applicant
+            await this.emailService.sendConfirmationEmail(
+              applicantEmailNormalized,
+              jobTitle,
+              recipientEmail,
+            );
+          } else {
+            emailResults.push({
+              email: recipientEmail,
+              status: 'failed',
+            });
+          }
+        } catch (error) {
+          this.logger.error(
+            `Failed to send email to ${recipientEmail} for job ${jobPosting.job_posting_id}:`,
+            error,
+          );
+          emailResults.push({
+            email: recipientEmail,
+            status: 'error',
+            error: error instanceof Error ? error.message : 'Unknown error',
+          });
+        }
+      }
+
+      results.push({
+        job_posting_id: jobPosting.job_posting_id,
+        job_title: jobTitle,
+        status: successCount > 0 ? 'success' : 'failed',
+        emails_found: extractedEmails,
+        email_results: emailResults,
+        total_emails: extractedEmails.length,
+        successful_emails: successCount,
+      });
+    }
+
+    // Overall status
+    const overallSuccess = results.some((r) => r.status === 'success');
+
+    return {
+      status: overallSuccess ? 'success' : 'partial_failure',
+      applicant_email: applicantEmailNormalized,
+      total_jobs_processed: results.length,
+      files_attached: files
+        ? files.map((f) => ({
+            filename: f.originalname,
+            size: f.size,
+            mimetype: f.mimetype,
+          }))
+        : [],
+      results,
+    };
   }
 }
