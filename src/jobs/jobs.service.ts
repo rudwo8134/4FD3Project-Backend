@@ -383,6 +383,7 @@ export class JobsService {
               applicantEmailNormalized,
               jobTitle,
               recipientEmail,
+              applicantName,
             );
           } else {
             emailResults.push({

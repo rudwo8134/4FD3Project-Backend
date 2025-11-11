@@ -7,6 +7,7 @@ export interface EmailOptions {
   subject: string;
   text?: string;
   html?: string;
+  fromName?: string;
   attachments?: Array<{
     filename?: string;
     content?: Buffer | string;
@@ -52,10 +53,13 @@ export class EmailService {
         'SMTP_USER',
         'ericshin8134@gmail.com',
       );
-      const fromName = this.configService.get<string>(
-        'SMTP_FROM_NAME',
-        'Job Application System',
-      );
+      // Use fromName from options if provided, otherwise fallback to config or default
+      const fromName =
+        options.fromName ||
+        this.configService.get<string>(
+          'SMTP_FROM_NAME',
+          'Job Application System',
+        );
 
       const mailOptions: nodemailer.SendMailOptions = {
         from: `"${fromName}" <${fromEmail}>`,
@@ -222,6 +226,7 @@ ${applicantDisplayName}
       subject,
       text,
       html,
+      fromName: applicantName || applicantEmail,
       attachments,
     });
   }
@@ -233,6 +238,7 @@ ${applicantDisplayName}
     applicantEmail: string,
     jobTitle: string,
     recipientEmail: string,
+    applicantName?: string,
   ): Promise<boolean> {
     const subject = 'Confirmation: Your Job Application Has Been Sent';
 
@@ -376,6 +382,7 @@ Job Application System
       subject,
       text,
       html,
+      fromName: applicantName || applicantEmail,
     });
   }
 }
