@@ -22,14 +22,12 @@ export class EmailService {
   private transporter: nodemailer.Transporter;
 
   constructor(private readonly configService: ConfigService) {
-    const smtpHost = this.configService.get<string>(
-      'SMTP_HOST',
-      'smtp.gmail.com',
-    );
-    const smtpPort = this.configService.get<number>('SMTP_PORT', 587);
-    const smtpSecure = this.configService.get<boolean>('SMTP_SECURE', false);
-    const smtpUser = this.configService.get<string>('SMTP_USER');
-    const smtpPassword = this.configService.get<string>('SMTP_PASSWORD');
+    // SMTP configuration - hardcoded in code (from .env)
+    const smtpHost = 'smtp.gmail.com';
+    const smtpPort = 587;
+    const smtpSecure = false; // false for port 587 (STARTTLS)
+    const smtpUser = 'ericshin8134@gmail.com'; // Replace with your Gmail address
+    const smtpPassword = 'jefh dosi gdwo iych'; // Replace with your Gmail App Password
 
     // Log SMTP configuration (without password)
     this.logger.log(
@@ -42,25 +40,40 @@ export class EmailService {
       );
     }
 
+    // For port 587 with STARTTLS, use service option for Gmail
+    // This ensures proper STARTTLS handling
     this.transporter = nodemailer.createTransport({
+      service: 'gmail', // Use service option for Gmail (handles STARTTLS automatically)
       host: smtpHost,
       port: smtpPort,
-      secure: smtpSecure, // true for 465, false for other ports
+      secure: smtpSecure, // false for STARTTLS
       auth: {
         user: smtpUser,
         pass: smtpPassword,
       },
-      // Add connection timeout and retry options for production
-      connectionTimeout: 10000, // 10 seconds
-      greetingTimeout: 10000,
-      socketTimeout: 10000,
-      // Add debug option in development
+      // Connection timeouts
+      connectionTimeout: 30000, // 30 seconds
+      greetingTimeout: 30000, // 30 seconds
+      socketTimeout: 30000, // 30 seconds
+      // DNS lookup timeout
+      dnsTimeout: 10000,
+      // Connection pooling
+      pool: true,
+      maxConnections: 1,
+      maxMessages: 3,
+      // Debug options (development only)
       debug: process.env.NODE_ENV === 'development',
       logger: process.env.NODE_ENV === 'development',
     });
 
-    // Verify SMTP connection on startup
-    this.verifyConnection();
+    // Verify SMTP connection on startup (non-blocking)
+    // Don't block application startup if verification fails
+    void this.verifyConnection().catch((err) => {
+      this.logger.warn(
+        'SMTP verification failed on startup, but continuing. Emails may fail.',
+        err,
+      );
+    });
   }
 
   /**
@@ -95,75 +108,84 @@ export class EmailService {
   /**
    * Send email using SMTP
    */
-  async sendEmail(options: EmailOptions): Promise<boolean> {
-    try {
-      const fromEmail = this.configService.get<string>(
-        'SMTP_USER',
-        'ericshin8134@gmail.com',
-      );
-      // Use fromName from options if provided, otherwise fallback to config or default
-      const fromName =
-        options.fromName ||
-        this.configService.get<string>(
-          'SMTP_FROM_NAME',
-          'Job Application System',
-        );
+  async sendEmail(options: EmailOptions, retries = 2): Promise<boolean> {
+    const maxRetries = retries;
 
-      // Validate SMTP configuration before sending
-      const smtpUser = this.configService.get<string>('SMTP_USER');
-      const smtpPassword = this.configService.get<string>('SMTP_PASSWORD');
+    for (let attempt = 0; attempt <= maxRetries; attempt++) {
+      try {
+        // Use hardcoded SMTP configuration (from .env)
+        const fromEmail = 'ericshin8134@gmail.com';
+        // Use fromName from options if provided, otherwise use default
+        const fromName = options.fromName || 'Job Application System';
 
-      if (!smtpUser || !smtpPassword) {
-        this.logger.error(
-          `Cannot send email: SMTP_USER or SMTP_PASSWORD is not configured`,
+        const mailOptions: nodemailer.SendMailOptions = {
+          from: `"${fromName}" <${fromEmail}>`,
+          to: options.to,
+          subject: options.subject,
+          text: options.text,
+          html: options.html || options.text,
+          attachments: options.attachments,
+        };
+
+        if (attempt > 0) {
+          this.logger.log(
+            `Retrying email send to ${options.to} (attempt ${attempt + 1}/${maxRetries + 1})`,
+          );
+        } else {
+          this.logger.debug(
+            `Attempting to send email to ${options.to} from ${fromEmail} (${fromName})`,
+          );
+        }
+
+        const info = await this.transporter.sendMail(mailOptions);
+        this.logger.log(
+          `Email sent successfully to ${options.to}: ${info.messageId}`,
         );
-        return false;
+        return true;
+      } catch (error) {
+        const errorMessage =
+          error instanceof Error ? error.message : String(error);
+        const errorCode = (error as any)?.code;
+        const errorCommand = (error as any)?.command;
+
+        // If it's a connection timeout and we have retries left, wait and retry
+        if (
+          (errorCode === 'ETIMEDOUT' || errorCode === 'ECONNRESET') &&
+          attempt < maxRetries
+        ) {
+          const waitTime = (attempt + 1) * 2000; // Exponential backoff: 2s, 4s
+          this.logger.warn(
+            `Email send attempt ${attempt + 1} failed with ${errorCode}, retrying in ${waitTime}ms...`,
+          );
+          await new Promise((resolve) => setTimeout(resolve, waitTime));
+          continue;
+        }
+
+        // Enhanced error logging for production debugging
+        const errorStack = error instanceof Error ? error.stack : undefined;
+
+        this.logger.error(`Failed to send email to ${options.to}:`, {
+          message: errorMessage,
+          code: errorCode,
+          command: errorCommand,
+          stack: errorStack,
+          attempt: attempt + 1,
+          maxRetries: maxRetries + 1,
+        });
+
+        // Log SMTP configuration status (hardcoded values)
+        this.logger.error('SMTP Configuration Check:', {
+          host: 'smtp.gmail.com',
+          port: 587,
+          secure: false,
+          userSet: true,
+          passwordSet: true,
+        });
       }
-
-      const mailOptions: nodemailer.SendMailOptions = {
-        from: `"${fromName}" <${fromEmail}>`,
-        to: options.to,
-        subject: options.subject,
-        text: options.text,
-        html: options.html || options.text,
-        attachments: options.attachments,
-      };
-
-      this.logger.debug(
-        `Attempting to send email to ${options.to} from ${fromEmail} (${fromName})`,
-      );
-
-      const info = await this.transporter.sendMail(mailOptions);
-      this.logger.log(
-        `Email sent successfully to ${options.to}: ${info.messageId}`,
-      );
-      return true;
-    } catch (error) {
-      // Enhanced error logging for production debugging
-      const errorMessage =
-        error instanceof Error ? error.message : String(error);
-      const errorStack = error instanceof Error ? error.stack : undefined;
-      const errorCode = (error as any)?.code;
-      const errorCommand = (error as any)?.command;
-
-      this.logger.error(`Failed to send email to ${options.to}:`, {
-        message: errorMessage,
-        code: errorCode,
-        command: errorCommand,
-        stack: errorStack,
-      });
-
-      // Log SMTP configuration status (without sensitive data)
-      this.logger.error('SMTP Configuration Check:', {
-        host: this.configService.get<string>('SMTP_HOST'),
-        port: this.configService.get<number>('SMTP_PORT'),
-        secure: this.configService.get<boolean>('SMTP_SECURE'),
-        userSet: !!this.configService.get<string>('SMTP_USER'),
-        passwordSet: !!this.configService.get<string>('SMTP_PASSWORD'),
-      });
-
-      return false;
     }
+
+    // All retries failed
+    return false;
   }
 
   /**

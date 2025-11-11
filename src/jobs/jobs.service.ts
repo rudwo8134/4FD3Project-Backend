@@ -396,14 +396,9 @@ export class JobsService {
               // Don't fail the whole operation if confirmation fails
             }
           } else {
-            // Get more details about the failure
-            const smtpUser = this.configService.get<string>('SMTP_USER');
-            const smtpPassword =
-              this.configService.get<string>('SMTP_PASSWORD');
+            // SMTP configuration is hardcoded, so credentials are always set
             const failureReason =
-              !smtpUser || !smtpPassword
-                ? 'SMTP credentials not configured'
-                : 'Email sending failed (check logs for details)';
+              'Email sending failed (check logs for details)';
 
             this.logger.error(
               `Failed to send application email to ${recipientEmail} for job ${jobPosting.job_posting_id}. Reason: ${failureReason}`,
