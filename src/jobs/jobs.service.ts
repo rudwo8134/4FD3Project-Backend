@@ -1,4 +1,5 @@
 import { Injectable, BadRequestException, Logger } from '@nestjs/common';
+import { ConfigService } from '@nestjs/config';
 import { InjectRepository } from '@nestjs/typeorm';
 import { Repository, In } from 'typeorm';
 import { GoogleJobsService } from './providers/google-jobs.service';
@@ -25,6 +26,7 @@ export class JobsService {
     private readonly jobBoard: JobBoardService,
     private readonly importer: ImportService,
     private readonly emailService: EmailService,
+    private readonly configService: ConfigService,
   ) {}
 
   async searchJobs(
@@ -379,27 +381,57 @@ export class JobsService {
             });
 
             // Send confirmation email to applicant
-            await this.emailService.sendConfirmationEmail(
-              applicantEmailNormalized,
-              jobTitle,
-              recipientEmail,
-              applicantName,
-            );
+            try {
+              await this.emailService.sendConfirmationEmail(
+                applicantEmailNormalized,
+                jobTitle,
+                recipientEmail,
+                applicantName,
+              );
+            } catch (confirmError) {
+              this.logger.warn(
+                `Failed to send confirmation email to ${applicantEmailNormalized}:`,
+                confirmError,
+              );
+              // Don't fail the whole operation if confirmation fails
+            }
           } else {
+            // Get more details about the failure
+            const smtpUser = this.configService.get<string>('SMTP_USER');
+            const smtpPassword =
+              this.configService.get<string>('SMTP_PASSWORD');
+            const failureReason =
+              !smtpUser || !smtpPassword
+                ? 'SMTP credentials not configured'
+                : 'Email sending failed (check logs for details)';
+
+            this.logger.error(
+              `Failed to send application email to ${recipientEmail} for job ${jobPosting.job_posting_id}. Reason: ${failureReason}`,
+            );
+
             emailResults.push({
               email: recipientEmail,
               status: 'failed',
+              error: failureReason,
             });
           }
         } catch (error) {
+          const errorMessage =
+            error instanceof Error ? error.message : 'Unknown error';
+          const errorStack = error instanceof Error ? error.stack : undefined;
+
           this.logger.error(
-            `Failed to send email to ${recipientEmail} for job ${jobPosting.job_posting_id}:`,
-            error,
+            `Exception while sending email to ${recipientEmail} for job ${jobPosting.job_posting_id}:`,
+            {
+              message: errorMessage,
+              stack: errorStack,
+            },
           );
+
           emailResults.push({
             email: recipientEmail,
             status: 'error',
-            error: error instanceof Error ? error.message : 'Unknown error',
+            error: errorMessage,
           });
         }
       }

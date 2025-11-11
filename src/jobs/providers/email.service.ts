@@ -22,15 +22,63 @@ export class EmailService {
   private transporter: nodemailer.Transporter;
 
   constructor(private readonly configService: ConfigService) {
+    const smtpHost = this.configService.get<string>(
+      'SMTP_HOST',
+      'smtp.gmail.com',
+    );
+    const smtpPort = this.configService.get<number>('SMTP_PORT', 587);
+    const smtpSecure = this.configService.get<boolean>('SMTP_SECURE', false);
+    const smtpUser = this.configService.get<string>('SMTP_USER');
+    const smtpPassword = this.configService.get<string>('SMTP_PASSWORD');
+
+    // Log SMTP configuration (without password)
+    this.logger.log(
+      `SMTP Configuration: host=${smtpHost}, port=${smtpPort}, secure=${smtpSecure}, user=${smtpUser ? '***' : 'NOT SET'}`,
+    );
+
+    if (!smtpUser || !smtpPassword) {
+      this.logger.warn(
+        'SMTP_USER or SMTP_PASSWORD is not set. Email sending will fail.',
+      );
+    }
+
     this.transporter = nodemailer.createTransport({
-      host: this.configService.get<string>('SMTP_HOST', 'smtp.gmail.com'),
-      port: this.configService.get<number>('SMTP_PORT', 587),
-      secure: this.configService.get<boolean>('SMTP_SECURE', false), // true for 465, false for other ports
+      host: smtpHost,
+      port: smtpPort,
+      secure: smtpSecure, // true for 465, false for other ports
       auth: {
-        user: this.configService.get<string>('SMTP_USER'),
-        pass: this.configService.get<string>('SMTP_PASSWORD'),
+        user: smtpUser,
+        pass: smtpPassword,
       },
+      // Add connection timeout and retry options for production
+      connectionTimeout: 10000, // 10 seconds
+      greetingTimeout: 10000,
+      socketTimeout: 10000,
+      // Add debug option in development
+      debug: process.env.NODE_ENV === 'development',
+      logger: process.env.NODE_ENV === 'development',
     });
+
+    // Verify SMTP connection on startup
+    this.verifyConnection();
+  }
+
+  /**
+   * Verify SMTP connection
+   */
+  async verifyConnection(): Promise<boolean> {
+    try {
+      await this.transporter.verify();
+      this.logger.log('SMTP connection verified successfully');
+      return true;
+    } catch (error) {
+      this.logger.error('SMTP connection verification failed:', error);
+      if (error instanceof Error) {
+        this.logger.error(`Error details: ${error.message}`);
+        this.logger.error(`Error stack: ${error.stack}`);
+      }
+      return false;
+    }
   }
 
   /**
@@ -61,6 +109,17 @@ export class EmailService {
           'Job Application System',
         );
 
+      // Validate SMTP configuration before sending
+      const smtpUser = this.configService.get<string>('SMTP_USER');
+      const smtpPassword = this.configService.get<string>('SMTP_PASSWORD');
+
+      if (!smtpUser || !smtpPassword) {
+        this.logger.error(
+          `Cannot send email: SMTP_USER or SMTP_PASSWORD is not configured`,
+        );
+        return false;
+      }
+
       const mailOptions: nodemailer.SendMailOptions = {
         from: `"${fromName}" <${fromEmail}>`,
         to: options.to,
@@ -70,13 +129,39 @@ export class EmailService {
         attachments: options.attachments,
       };
 
+      this.logger.debug(
+        `Attempting to send email to ${options.to} from ${fromEmail} (${fromName})`,
+      );
+
       const info = await this.transporter.sendMail(mailOptions);
       this.logger.log(
         `Email sent successfully to ${options.to}: ${info.messageId}`,
       );
       return true;
     } catch (error) {
-      this.logger.error(`Failed to send email to ${options.to}:`, error);
+      // Enhanced error logging for production debugging
+      const errorMessage =
+        error instanceof Error ? error.message : String(error);
+      const errorStack = error instanceof Error ? error.stack : undefined;
+      const errorCode = (error as any)?.code;
+      const errorCommand = (error as any)?.command;
+
+      this.logger.error(`Failed to send email to ${options.to}:`, {
+        message: errorMessage,
+        code: errorCode,
+        command: errorCommand,
+        stack: errorStack,
+      });
+
+      // Log SMTP configuration status (without sensitive data)
+      this.logger.error('SMTP Configuration Check:', {
+        host: this.configService.get<string>('SMTP_HOST'),
+        port: this.configService.get<number>('SMTP_PORT'),
+        secure: this.configService.get<boolean>('SMTP_SECURE'),
+        userSet: !!this.configService.get<string>('SMTP_USER'),
+        passwordSet: !!this.configService.get<string>('SMTP_PASSWORD'),
+      });
+
       return false;
     }
   }
