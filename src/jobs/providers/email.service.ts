@@ -38,10 +38,11 @@ export class EmailService {
       process.env.HEROKU_APP_NAME !== undefined ||
       process.env.AWS_LAMBDA_FUNCTION_NAME !== undefined;
 
-    // Production uses port 465 (SSL) for better reliability
-    // Development uses port 587 (STARTTLS)
-    const smtpPort = this.isProduction ? 465 : 587;
-    const smtpSecure = this.isProduction ? true : false;
+    // Use port 587 (STARTTLS) for both production and development
+    // Port 465 is often blocked by firewalls in production environments
+    // Port 587 with STARTTLS is more compatible with network restrictions
+    const smtpPort = 587;
+    const smtpSecure = false; // false for STARTTLS
 
     this.logger.log(
       `SMTP Configuration [${this.isProduction ? 'PRODUCTION' : 'DEVELOPMENT'}]: host=${this.smtpHost}, port=${smtpPort}, secure=${smtpSecure}, user=${this.smtpUser ? '***' : 'NOT SET'}`,
@@ -166,8 +167,9 @@ export class EmailService {
 
       // Create a new transporter for each attempt (especially important for production)
       // This ensures a clean connection state and avoids connection pooling issues
-      const smtpPort = this.isProduction ? 465 : 587;
-      const smtpSecure = this.isProduction ? true : false;
+      // Use port 587 (STARTTLS) for both environments - port 465 is often blocked
+      const smtpPort = 587;
+      const smtpSecure = false; // false for STARTTLS
       let transporter: nodemailer.Transporter | null = null;
 
       try {
@@ -393,6 +395,7 @@ export class EmailService {
   /**
    * Create a new transporter instance
    * Used for creating fresh connections in production
+   * Optimized for port 587 (STARTTLS) - no API keys required
    * Based on Nodemailer official documentation: https://nodemailer.com/smtp
    */
   private createTransporter(
@@ -406,19 +409,17 @@ export class EmailService {
     const transportOptions: any = {
       host: this.smtpHost,
       port: port,
-      secure: secure, // true for port 465 (SSL), false for port 587 (STARTTLS)
+      secure: secure, // false for port 587 (STARTTLS)
       auth: {
         user: this.smtpUser,
         pass: this.smtpPassword,
       },
-      // Connection timeouts based on Nodemailer defaults
-      // Defaults: connectionTimeout: 120000ms, greetingTimeout: 30000ms,
-      // socketTimeout: 600000ms, dnsTimeout: 30000ms
-      // Production uses longer timeouts for network latency
-      connectionTimeout: this.isProduction ? 120000 : 60000, // 120s (default) for production, 60s for dev
-      greetingTimeout: this.isProduction ? 30000 : 30000, // 30s (default) for both
-      socketTimeout: this.isProduction ? 600000 : 300000, // 600s (default) for production, 300s for dev
-      dnsTimeout: this.isProduction ? 30000 : 30000, // 30s (default) for both
+      // Optimized timeouts for port 587 STARTTLS
+      // Increased timeouts for production network latency
+      connectionTimeout: this.isProduction ? 120000 : 60000, // 120s for production, 60s for dev
+      greetingTimeout: this.isProduction ? 30000 : 30000, // 30s for both
+      socketTimeout: this.isProduction ? 600000 : 300000, // 600s for production, 300s for dev
+      dnsTimeout: this.isProduction ? 30000 : 30000, // 30s for both
       // Disable connection pooling - each email gets a fresh connection
       // This follows the "Single connection" pattern from Nodemailer docs
       pool: false,
@@ -431,24 +432,13 @@ export class EmailService {
       `[CREATE_TRANSPORTER] Timeout settings: connectionTimeout=${transportOptions.connectionTimeout}ms, greetingTimeout=${transportOptions.greetingTimeout}ms, socketTimeout=${transportOptions.socketTimeout}ms, dnsTimeout=${transportOptions.dnsTimeout}ms`,
     );
 
-    // Add STARTTLS requirement only for port 587
-    // According to docs: secure: false doesn't mean plaintext - STARTTLS is used automatically
+    // For port 587 (STARTTLS) - ensure TLS upgrade
     if (!secure && port === 587) {
       transportOptions.requireTLS = true; // Force STARTTLS
+      // Don't ignore TLS - we want secure connection
+      transportOptions.ignoreTLS = false;
       this.logger.log(
-        `[CREATE_TRANSPORTER] Added requireTLS: true for port 587 (STARTTLS)`,
-      );
-    }
-
-    // Add TLS options for SSL (port 465) - Critical for production
-    // Based on Nodemailer docs example: "Allow self-signed certificates"
-    if (secure && port === 465) {
-      transportOptions.tls = {
-        rejectUnauthorized: false, // Do not fail on invalid certs (from Nodemailer docs)
-        minVersion: 'TLSv1.2',
-      };
-      this.logger.log(
-        `[CREATE_TRANSPORTER] Added TLS options for port 465: rejectUnauthorized=false, minVersion=TLSv1.2`,
+        `[CREATE_TRANSPORTER] Added requireTLS: true, ignoreTLS: false for port 587 (STARTTLS)`,
       );
     }
 
