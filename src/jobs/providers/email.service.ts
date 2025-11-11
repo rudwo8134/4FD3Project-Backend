@@ -21,59 +21,95 @@ export class EmailService {
   private readonly logger = new Logger(EmailService.name);
   private transporter: nodemailer.Transporter;
 
-  constructor(private readonly configService: ConfigService) {
-    // SMTP configuration - hardcoded in code (from .env)
-    const smtpHost = 'smtp.gmail.com';
-    const smtpPort = 587;
-    const smtpSecure = false; // false for port 587 (STARTTLS)
-    const smtpUser = 'ericshin8134@gmail.com'; // Replace with your Gmail address
-    const smtpPassword = 'jefh dosi gdwo iych'; // Replace with your Gmail App Password
+  private smtpHost = 'smtp.gmail.com';
+  private smtpUser = 'ericshin8134@gmail.com';
+  private smtpPassword = 'jefh dosi gdwo iych';
+  private isProduction = false;
 
-    // Log SMTP configuration (without password)
+  constructor(private readonly configService: ConfigService) {
+    // Detect production environment
+    // Check multiple indicators for production
+    const nodeEnv = process.env.NODE_ENV?.toLowerCase() || '';
+    this.isProduction =
+      nodeEnv === 'production' ||
+      nodeEnv === 'prod' ||
+      process.env.RAILWAY_ENVIRONMENT === 'production' ||
+      process.env.VERCEL_ENV === 'production' ||
+      process.env.HEROKU_APP_NAME !== undefined ||
+      process.env.AWS_LAMBDA_FUNCTION_NAME !== undefined;
+
+    // Production uses port 465 (SSL) for better reliability
+    // Development uses port 587 (STARTTLS)
+    const smtpPort = this.isProduction ? 465 : 587;
+    const smtpSecure = this.isProduction ? true : false;
+
     this.logger.log(
-      `SMTP Configuration: host=${smtpHost}, port=${smtpPort}, secure=${smtpSecure}, user=${smtpUser ? '***' : 'NOT SET'}`,
+      `SMTP Configuration [${this.isProduction ? 'PRODUCTION' : 'DEVELOPMENT'}]: host=${this.smtpHost}, port=${smtpPort}, secure=${smtpSecure}, user=${this.smtpUser ? '***' : 'NOT SET'}`,
     );
 
-    if (!smtpUser || !smtpPassword) {
+    if (!this.smtpUser || !this.smtpPassword) {
       this.logger.warn(
         'SMTP_USER or SMTP_PASSWORD is not set. Email sending will fail.',
       );
     }
 
-    // For port 587 with STARTTLS, use service option for Gmail
-    // This ensures proper STARTTLS handling
-    this.transporter = nodemailer.createTransport({
-      service: 'gmail', // Use service option for Gmail (handles STARTTLS automatically)
-      host: smtpHost,
-      port: smtpPort,
-      secure: smtpSecure, // false for STARTTLS
-      auth: {
-        user: smtpUser,
-        pass: smtpPassword,
-      },
-      // Connection timeouts
-      connectionTimeout: 30000, // 30 seconds
-      greetingTimeout: 30000, // 30 seconds
-      socketTimeout: 30000, // 30 seconds
-      // DNS lookup timeout
-      dnsTimeout: 10000,
-      // Connection pooling
-      pool: true,
-      maxConnections: 1,
-      maxMessages: 3,
-      // Debug options (development only)
-      debug: process.env.NODE_ENV === 'development',
-      logger: process.env.NODE_ENV === 'development',
-    });
+    // Initialize transporter with production-optimized settings
+    this.initializeTransporter(smtpPort, smtpSecure);
 
-    // Verify SMTP connection on startup (non-blocking)
-    // Don't block application startup if verification fails
-    void this.verifyConnection().catch((err) => {
-      this.logger.warn(
-        'SMTP verification failed on startup, but continuing. Emails may fail.',
-        err,
+    // Skip connection verification on startup for production
+    // Verify connection only when actually sending emails
+    if (!this.isProduction) {
+      void this.verifyConnection().catch((err) => {
+        this.logger.warn(
+          'SMTP verification failed on startup, but continuing. Emails may fail.',
+          err,
+        );
+      });
+    } else {
+      this.logger.log(
+        'Production mode: Skipping SMTP verification on startup. Connection will be established on first email send.',
       );
-    });
+    }
+  }
+
+  /**
+   * Initialize or recreate transporter with optimal settings
+   */
+  private initializeTransporter(port: number, secure: boolean): void {
+    const transportOptions: any = {
+      host: this.smtpHost,
+      port: port,
+      secure: secure, // true for port 465 (SSL), false for port 587 (STARTTLS)
+      auth: {
+        user: this.smtpUser,
+        pass: this.smtpPassword,
+      },
+      // Production-optimized timeouts
+      connectionTimeout: this.isProduction ? 90000 : 60000, // 90s for production, 60s for dev
+      greetingTimeout: this.isProduction ? 90000 : 60000,
+      socketTimeout: this.isProduction ? 90000 : 60000,
+      dnsTimeout: this.isProduction ? 60000 : 30000, // 60s for production, 30s for dev
+      // Disable connection pooling for production compatibility
+      pool: false,
+      // Debug options (development only)
+      debug: !this.isProduction,
+      logger: !this.isProduction,
+    };
+
+    // Add STARTTLS requirement only for port 587
+    if (!secure && port === 587) {
+      transportOptions.requireTLS = true;
+    }
+
+    // Add TLS options for SSL (port 465)
+    if (secure && port === 465) {
+      transportOptions.tls = {
+        rejectUnauthorized: false,
+        minVersion: 'TLSv1.2',
+      };
+    }
+
+    this.transporter = nodemailer.createTransport(transportOptions);
   }
 
   /**
@@ -148,15 +184,31 @@ export class EmailService {
         const errorCode = (error as any)?.code;
         const errorCommand = (error as any)?.command;
 
-        // If it's a connection timeout and we have retries left, wait and retry
+        // If it's a connection timeout and we have retries left, recreate transporter and retry
         if (
-          (errorCode === 'ETIMEDOUT' || errorCode === 'ECONNRESET') &&
+          (errorCode === 'ETIMEDOUT' ||
+            errorCode === 'ECONNRESET' ||
+            errorCode === 'ESOCKET') &&
           attempt < maxRetries
         ) {
-          const waitTime = (attempt + 1) * 2000; // Exponential backoff: 2s, 4s
+          const waitTime = (attempt + 1) * 3000; // Exponential backoff: 3s, 6s
           this.logger.warn(
-            `Email send attempt ${attempt + 1} failed with ${errorCode}, retrying in ${waitTime}ms...`,
+            `Email send attempt ${attempt + 1} failed with ${errorCode}, recreating transporter and retrying in ${waitTime}ms...`,
           );
+
+          // Recreate transporter for connection issues
+          try {
+            this.transporter.close();
+          } catch {
+            // Ignore close errors
+          }
+
+          // Recreate transporter with production-optimized configuration
+          // Production uses port 465 (SSL), development uses port 587 (STARTTLS)
+          const smtpPort = this.isProduction ? 465 : 587;
+          const smtpSecure = this.isProduction ? true : false;
+          this.initializeTransporter(smtpPort, smtpSecure);
+
           await new Promise((resolve) => setTimeout(resolve, waitTime));
           continue;
         }
@@ -173,13 +225,14 @@ export class EmailService {
           maxRetries: maxRetries + 1,
         });
 
-        // Log SMTP configuration status (hardcoded values)
+        // Log SMTP configuration status (environment-aware)
         this.logger.error('SMTP Configuration Check:', {
-          host: 'smtp.gmail.com',
-          port: 587,
-          secure: false,
-          userSet: true,
-          passwordSet: true,
+          host: this.smtpHost,
+          port: this.isProduction ? 465 : 587,
+          secure: this.isProduction,
+          environment: this.isProduction ? 'PRODUCTION' : 'DEVELOPMENT',
+          userSet: !!this.smtpUser,
+          passwordSet: !!this.smtpPassword,
         });
       }
     }
