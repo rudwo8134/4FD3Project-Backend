@@ -28,6 +28,13 @@ export class JobsController {
   @ApiQuery({ name: 'q', required: false, description: 'search query' })
   @ApiQuery({ name: 'location', required: false, description: 'location' })
   @ApiQuery({
+    name: 'isEmailAvailable',
+    required: false,
+    type: Boolean,
+    description:
+      'Filter by email availability (true: only jobs with email, false: only jobs without email)',
+  })
+  @ApiQuery({
     name: 'limit',
     required: false,
     description: 'page size (default 25, max 100)',
@@ -40,21 +47,31 @@ export class JobsController {
   async search(
     @Query('q') q?: string,
     @Query('location') location?: string,
+    @Query('isEmailAvailable') isEmailAvailableStr?: string,
     @Query('limit') limitStr?: string,
     @Query('offset') offsetStr?: string,
   ) {
     const limit = limitStr ? Number(limitStr) : undefined;
     const offset = offsetStr ? Number(offsetStr) : undefined;
+    const isEmailAvailable =
+      isEmailAvailableStr !== undefined
+        ? isEmailAvailableStr === 'true'
+        : undefined;
 
-    if ((!q || q.trim() === '') && (!location || location.trim() === '')) {
+    if (
+      (!q || q.trim() === '') &&
+      (!location || location.trim() === '') &&
+      isEmailAvailable === undefined
+    ) {
       throw new BadRequestException(
-        'q 또는 location 중 하나는 반드시 제공해야 합니다.',
+        'q, location, 또는 isEmailAvailable 중 하나는 반드시 제공해야 합니다.',
       );
     }
 
     return this.jobsService.searchJobs({
       query: q,
       location,
+      isEmailAvailable,
       limit,
       offset,
     });

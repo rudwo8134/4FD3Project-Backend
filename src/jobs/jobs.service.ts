@@ -11,6 +11,7 @@ import { expandTokens } from './search/synonyms';
 export interface JobSearchParams {
   query?: string;
   location?: string;
+  isEmailAvailable?: boolean;
 }
 
 @Injectable()
@@ -34,9 +35,10 @@ export class JobsService {
 
     const rawQuery = (params.query ?? '').trim();
     const rawLocation = (params.location ?? '').trim();
+    const isEmailAvailable = params.isEmailAvailable;
 
     // If nothing provided, return empty result to avoid full table scan
-    if (!rawQuery && !rawLocation) {
+    if (!rawQuery && !rawLocation && isEmailAvailable === undefined) {
       return { count: 0, results: [] };
     }
 
@@ -54,7 +56,14 @@ export class JobsService {
     const qb = this.jobPostingRepo.createQueryBuilder('jp');
 
     // Select entity columns
-    qb.select(['jp.id', 'jp.job_posting_id', 'jp.data', 'jp.created_at']);
+    qb.select([
+      'jp.id',
+      'jp.job_posting_id',
+      'jp.data',
+      'jp.created_at',
+      'jp.isEmailAvailable',
+      'jp.resume_email',
+    ]);
 
     // Build a single score expression (cannot reuse SELECT aliases in Postgres)
     const scoreExprParts: string[] = [];
@@ -113,23 +122,72 @@ export class JobsService {
       whereClauses.push(`(jp.data->>'job_location') ILIKE :${p}`);
     });
 
-    if (whereClauses.length > 0) {
-      qb.where(whereClauses.map((c) => `(${c})`).join(' OR ')).setParameters({
-        ...whereParams,
-      });
+    // Add location filter to params if provided
+    if (rawLocation) {
+      whereParams['locFilter'] = `%${rawLocation}%`;
     }
 
-    if (rawLocation) {
-      // If a location filter is provided, require it
-      qb.andWhere(`(jp.data->>'job_location') ILIKE :locFilter`, {
-        locFilter: `%${rawLocation}%`,
-      });
+    // Note: isEmailAvailable uses IS TRUE/IS FALSE, so no parameter needed
+
+    // Build WHERE conditions - combine all conditions with AND
+    const allWhereConditions: string[] = [];
+
+    // Query conditions (OR group)
+    if (whereClauses.length > 0) {
+      allWhereConditions.push(
+        `(${whereClauses.map((c) => `(${c})`).join(' OR ')})`,
+      );
     }
+
+    // Location filter (AND)
+    if (rawLocation) {
+      allWhereConditions.push(`(jp.data->>'job_location') ILIKE :locFilter`);
+    }
+
+    // isEmailAvailable filter (AND)
+    if (isEmailAvailable !== undefined) {
+      if (isEmailAvailable) {
+        // Return records where resume_email is not null (has email value)
+        // This ensures we only return jobs with actual email addresses
+        allWhereConditions.push('jp.resume_email IS NOT NULL');
+        // Also check that resume_email is not empty string
+        allWhereConditions.push("jp.resume_email != ''");
+      } else {
+        // Return records where isEmailAvailable is false or null, or resume_email is null/empty
+        allWhereConditions.push(
+          "(jp.isEmailAvailable IS FALSE OR jp.isEmailAvailable IS NULL OR jp.resume_email IS NULL OR jp.resume_email = '')",
+        );
+      }
+    }
+
+    // Apply all WHERE conditions
+    if (allWhereConditions.length > 0) {
+      const whereSql = allWhereConditions.join(' AND ');
+      qb.where(whereSql).setParameters(whereParams);
+
+      // Debug logging
+      this.logger.debug(
+        `Search query - WHERE: ${whereSql}, params: ${JSON.stringify(whereParams)}`,
+      );
+    } else {
+      // This should not happen due to validation, but log if it does
+      this.logger.warn('No WHERE conditions generated for search');
+    }
+
     qb.orderBy('score', 'DESC');
     qb.addOrderBy('jp.created_at', 'DESC');
     qb.limit(limit);
     qb.offset(offset);
+
+    // Debug: log the generated SQL
+    const sql = qb.getSql();
+    this.logger.debug(`Generated SQL: ${sql}`);
+
     const { entities, raw } = await qb.getRawAndEntities();
+
+    this.logger.debug(
+      `Search results: found ${entities.length} entities, isEmailAvailable filter: ${isEmailAvailable}`,
+    );
 
     const results = entities.map((e, i) => {
       const score = Number(raw[i]?.score ?? 0);
@@ -137,6 +195,8 @@ export class JobsService {
         id: e.id,
         job_posting_id: e.job_posting_id,
         score,
+        isEmailAvailable: e.isEmailAvailable ?? false,
+        resume_email: e.resume_email ?? null,
         ...e.data,
       } as Record<string, any>;
     });

@@ -19,6 +19,12 @@ export class JobPosting {
   @Column({ type: 'jsonb' })
   data!: Record<string, any>;
 
+  @Column({ type: 'boolean', default: false, nullable: true })
+  isEmailAvailable?: boolean;
+
+  @Column({ type: 'varchar', length: 255, nullable: true })
+  resume_email?: string;
+
   @CreateDateColumn({ type: 'timestamptz' })
   created_at!: Date;
 

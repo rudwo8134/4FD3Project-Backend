@@ -67,7 +67,9 @@ export class EmailService {
       };
 
       const info = await this.transporter.sendMail(mailOptions);
-      this.logger.log(`Email sent successfully to ${options.to}: ${info.messageId}`);
+      this.logger.log(
+        `Email sent successfully to ${options.to}: ${info.messageId}`,
+      );
       return true;
     } catch (error) {
       this.logger.error(`Failed to send email to ${options.to}:`, error);
@@ -140,4 +142,3 @@ Job Application System
     });
   }
 }
-
