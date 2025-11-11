@@ -115,6 +115,11 @@ export class JobsController {
           type: 'string',
           description: 'Name of the applicant (optional)',
         },
+        emailTestMode: {
+          type: 'boolean',
+          description:
+            'If true, emails will be sent to rudwo8134@gmail.com instead of actual resume_email (for testing)',
+        },
         files: {
           type: 'array',
           items: {
@@ -133,6 +138,7 @@ export class JobsController {
       job_posting_id: string | string[];
       applicant_email: string;
       applicant_name?: string;
+      emailTestMode?: string | boolean;
     },
     @UploadedFiles() files?: Express.Multer.File[],
   ) {
@@ -153,11 +159,21 @@ export class JobsController {
       jobPostingIds = body.job_posting_id;
     }
 
+    // Parse emailTestMode (can be string "true"/"false" from form-data or boolean)
+    // Default to false if not provided
+    const emailTestMode =
+      body.emailTestMode === true ||
+      body.emailTestMode === 'true' ||
+      body.emailTestMode === '1'
+        ? true
+        : false;
+
     return this.jobsService.applyToJobs(
       jobPostingIds,
       body.applicant_email,
       body.applicant_name,
       files,
+      emailTestMode,
     );
   }
 }

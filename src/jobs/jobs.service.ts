@@ -282,6 +282,7 @@ export class JobsService {
     applicantEmail: string,
     applicantName?: string,
     files?: Express.Multer.File[],
+    emailTestMode?: boolean,
   ) {
     // Normalize to array
     const ids = Array.isArray(jobPostingIds) ? jobPostingIds : [jobPostingIds];
@@ -310,24 +311,41 @@ export class JobsService {
     const results = [];
     const applicantEmailNormalized = applicantEmail.trim();
 
+    // Default emailTestMode to false if not provided
+    const isTestMode = emailTestMode === true;
+
     // Process each job posting
     for (const jobPosting of jobPostings) {
       const jobData = jobPosting.data as Record<string, any>;
       const jobTitle = jobData.job_title || 'Unknown Position';
-      const jobSummary = jobData.job_summary || '';
 
-      // Extract emails from job_summary
-      const extractedEmails = this.emailService.extractEmails(jobSummary);
+      // Use resume_email from database instead of extracting from job_summary
+      const resumeEmail = jobPosting.resume_email;
 
-      if (extractedEmails.length === 0) {
+      // In test mode, use test email address instead of actual resume_email
+      const testEmailAddress = 'rudwo8134@gmail.com';
+      const targetEmail = isTestMode ? testEmailAddress : resumeEmail?.trim();
+
+      if (!targetEmail || targetEmail === '') {
         results.push({
           job_posting_id: jobPosting.job_posting_id,
           job_title: jobTitle,
           status: 'failed',
-          reason: 'job_summary에서 이메일 주소를 찾을 수 없습니다.',
+          reason: isTestMode
+            ? 'Test mode is enabled but test email address is invalid.'
+            : 'resume_email이 데이터베이스에 저장되어 있지 않습니다.',
           emails_found: [],
         });
         continue;
+      }
+
+      const extractedEmails = [targetEmail];
+
+      // Log test mode usage
+      if (isTestMode) {
+        this.logger.log(
+          `Test mode enabled: Sending email to ${testEmailAddress} instead of ${resumeEmail || 'N/A'} for job ${jobPosting.job_posting_id}`,
+        );
       }
 
       // Prepare attachments from files
@@ -393,6 +411,8 @@ export class JobsService {
         email_results: emailResults,
         total_emails: extractedEmails.length,
         successful_emails: successCount,
+        test_mode: isTestMode,
+        original_resume_email: isTestMode ? resumeEmail : undefined,
       });
     }
 
@@ -403,6 +423,7 @@ export class JobsService {
       status: overallSuccess ? 'success' : 'partial_failure',
       applicant_email: applicantEmailNormalized,
       total_jobs_processed: results.length,
+      email_test_mode: isTestMode,
       files_attached: files
         ? files.map((f) => ({
             filename: f.originalname,
