@@ -152,8 +152,18 @@ export class EmailService {
    */
   async sendEmail(options: EmailOptions, retries = 2): Promise<boolean> {
     const maxRetries = retries;
+    const startTime = Date.now();
+
+    this.logger.log(
+      `[EMAIL_SEND_START] Starting email send process. To: ${options.to}, Attempts: ${maxRetries + 1}, Environment: ${this.isProduction ? 'PRODUCTION' : 'DEVELOPMENT'}`,
+    );
 
     for (let attempt = 0; attempt <= maxRetries; attempt++) {
+      const attemptStartTime = Date.now();
+      this.logger.log(
+        `[EMAIL_ATTEMPT_${attempt + 1}] Starting attempt ${attempt + 1} of ${maxRetries + 1}`,
+      );
+
       // Create a new transporter for each attempt (especially important for production)
       // This ensures a clean connection state and avoids connection pooling issues
       const smtpPort = this.isProduction ? 465 : 587;
@@ -162,7 +172,15 @@ export class EmailService {
 
       try {
         // Create fresh transporter for this attempt
+        this.logger.log(
+          `[TRANSPORTER_CREATE] Creating new transporter. Port: ${smtpPort}, Secure: ${smtpSecure}, Host: ${this.smtpHost}`,
+        );
+        const transporterCreateStart = Date.now();
         transporter = this.createTransporter(smtpPort, smtpSecure);
+        const transporterCreateTime = Date.now() - transporterCreateStart;
+        this.logger.log(
+          `[TRANSPORTER_CREATE] Transporter created successfully in ${transporterCreateTime}ms`,
+        );
 
         // Use hardcoded SMTP configuration (from .env)
         const fromEmail = 'ericshin8134@gmail.com';
@@ -178,50 +196,116 @@ export class EmailService {
           attachments: options.attachments,
         };
 
+        this.logger.log(
+          `[MAIL_OPTIONS] Mail options prepared. From: ${fromEmail}, To: ${options.to}, Subject: ${options.subject?.substring(0, 50)}...`,
+        );
+
         if (attempt > 0) {
           this.logger.log(
-            `Retrying email send to ${options.to} (attempt ${attempt + 1}/${maxRetries + 1})`,
+            `[RETRY] Retrying email send to ${options.to} (attempt ${attempt + 1}/${maxRetries + 1})`,
           );
         } else {
-          this.logger.debug(
-            `Attempting to send email to ${options.to} from ${fromEmail} (${fromName})`,
+          this.logger.log(
+            `[FIRST_ATTEMPT] Attempting to send email to ${options.to} from ${fromEmail} (${fromName})`,
           );
         }
 
         // Wrap sendMail in Promise for production/serverless environments
         // This ensures the email is fully sent before the function completes
         // Based on Stack Overflow solution for production nodemailer issues
+        this.logger.log(
+          `[SENDMAIL_START] Calling transporter.sendMail() at ${new Date().toISOString()}`,
+        );
+        const sendMailStartTime = Date.now();
+
         const info = await new Promise<nodemailer.SentMessageInfo>(
           (resolve, reject) => {
+            this.logger.log(
+              `[PROMISE_CALLBACK] Promise callback entered. About to call sendMail...`,
+            );
+
             transporter!.sendMail(mailOptions, (err, info) => {
+              const callbackTime = Date.now();
+              this.logger.log(
+                `[SENDMAIL_CALLBACK] sendMail callback invoked at ${new Date().toISOString()} (${callbackTime - sendMailStartTime}ms after sendMail call)`,
+              );
+
               if (err) {
+                this.logger.error(
+                  `[SENDMAIL_ERROR] Error in sendMail callback:`,
+                  {
+                    error: err,
+                    message: err.message,
+                    code: (err as any)?.code,
+                    command: (err as any)?.command,
+                    response: (err as any)?.response,
+                    responseCode: (err as any)?.responseCode,
+                    errno: (err as any)?.errno,
+                    syscall: (err as any)?.syscall,
+                    hostname: (err as any)?.hostname,
+                    port: (err as any)?.port,
+                    stack: err.stack,
+                  },
+                );
                 reject(err);
               } else {
+                this.logger.log(
+                  `[SENDMAIL_SUCCESS] sendMail callback success. MessageId: ${info?.messageId}, Response: ${info?.response}`,
+                );
                 resolve(info);
               }
             });
           },
         );
 
+        const sendMailTime = Date.now() - sendMailStartTime;
+        const attemptTime = Date.now() - attemptStartTime;
+
         this.logger.log(
-          `Email sent successfully to ${options.to}: ${info.messageId}`,
+          `[EMAIL_SEND_SUCCESS] Email sent successfully to ${options.to} in ${sendMailTime}ms (total attempt time: ${attemptTime}ms). MessageId: ${info.messageId}`,
         );
 
         // Close transporter after successful send
+        this.logger.log(`[TRANSPORTER_CLOSE] Closing transporter...`);
         try {
           transporter.close();
-        } catch {
-          // Ignore close errors
+          this.logger.log(
+            `[TRANSPORTER_CLOSE] Transporter closed successfully`,
+          );
+        } catch (closeError) {
+          this.logger.warn(
+            `[TRANSPORTER_CLOSE] Error closing transporter:`,
+            closeError,
+          );
         }
+
+        const totalTime = Date.now() - startTime;
+        this.logger.log(
+          `[EMAIL_SEND_COMPLETE] Email send process completed successfully in ${totalTime}ms`,
+        );
 
         return true;
       } catch (error) {
+        const attemptTime = Date.now() - attemptStartTime;
+        this.logger.error(
+          `[EMAIL_ATTEMPT_ERROR] Attempt ${attempt + 1} failed after ${attemptTime}ms`,
+        );
+
         // Always close transporter on error
         if (transporter) {
+          this.logger.log(
+            `[TRANSPORTER_CLOSE_ERROR] Closing transporter after error...`,
+          );
           try {
             transporter.close();
-          } catch {
-            // Ignore close errors
+            this.logger.log(
+              `[TRANSPORTER_CLOSE_ERROR] Transporter closed successfully`,
+            );
+          } catch (closeError) {
+            this.logger.warn(
+              `[TRANSPORTER_CLOSE_ERROR] Error closing transporter:`,
+              closeError,
+            );
           }
         }
 
@@ -229,6 +313,45 @@ export class EmailService {
           error instanceof Error ? error.message : String(error);
         const errorCode = (error as any)?.code;
         const errorCommand = (error as any)?.command;
+        const errorResponse = (error as any)?.response;
+        const errorResponseCode = (error as any)?.responseCode;
+        const errorErrno = (error as any)?.errno;
+        const errorSyscall = (error as any)?.syscall;
+        const errorHostname = (error as any)?.hostname;
+        const errorPort = (error as any)?.port;
+
+        // Detailed error logging
+        this.logger.error(`[ERROR_DETAILS] Full error details:`, {
+          message: errorMessage,
+          code: errorCode,
+          command: errorCommand,
+          response: errorResponse,
+          responseCode: errorResponseCode,
+          errno: errorErrno,
+          syscall: errorSyscall,
+          hostname: errorHostname,
+          port: errorPort,
+          stack: error instanceof Error ? error.stack : undefined,
+          attempt: attempt + 1,
+          maxRetries: maxRetries + 1,
+          attemptTime: attemptTime,
+          errorType: error?.constructor?.name,
+          errorString: String(error),
+        });
+
+        // Log SMTP configuration status (environment-aware)
+        this.logger.error('[SMTP_CONFIG_CHECK] SMTP Configuration Check:', {
+          host: this.smtpHost,
+          port: smtpPort,
+          secure: smtpSecure,
+          environment: this.isProduction ? 'PRODUCTION' : 'DEVELOPMENT',
+          userSet: !!this.smtpUser,
+          passwordSet: !!this.smtpPassword,
+          user: this.smtpUser
+            ? `${this.smtpUser.substring(0, 3)}***`
+            : 'NOT SET',
+          passwordLength: this.smtpPassword ? this.smtpPassword.length : 0,
+        });
 
         // If it's a connection timeout and we have retries left, wait and retry
         if (
@@ -239,38 +362,31 @@ export class EmailService {
         ) {
           const waitTime = (attempt + 1) * 3000; // Exponential backoff: 3s, 6s
           this.logger.warn(
-            `Email send attempt ${attempt + 1} failed with ${errorCode}, retrying in ${waitTime}ms...`,
+            `[RETRY_DECISION] Connection error detected (${errorCode}). Will retry attempt ${attempt + 2} in ${waitTime}ms...`,
           );
 
           await new Promise((resolve) => setTimeout(resolve, waitTime));
+          this.logger.log(
+            `[RETRY_WAIT_COMPLETE] Wait complete, starting next attempt`,
+          );
           continue;
         }
 
-        // Enhanced error logging for production debugging
-        const errorStack = error instanceof Error ? error.stack : undefined;
-
-        this.logger.error(`Failed to send email to ${options.to}:`, {
-          message: errorMessage,
-          code: errorCode,
-          command: errorCommand,
-          stack: errorStack,
-          attempt: attempt + 1,
-          maxRetries: maxRetries + 1,
-        });
-
-        // Log SMTP configuration status (environment-aware)
-        this.logger.error('SMTP Configuration Check:', {
-          host: this.smtpHost,
-          port: smtpPort,
-          secure: smtpSecure,
-          environment: this.isProduction ? 'PRODUCTION' : 'DEVELOPMENT',
-          userSet: !!this.smtpUser,
-          passwordSet: !!this.smtpPassword,
-        });
+        // If this is the last attempt, log final failure
+        if (attempt === maxRetries) {
+          const totalTime = Date.now() - startTime;
+          this.logger.error(
+            `[EMAIL_SEND_FAILED] All ${maxRetries + 1} attempts failed. Total time: ${totalTime}ms`,
+          );
+        }
       }
     }
 
     // All retries failed
+    const totalTime = Date.now() - startTime;
+    this.logger.error(
+      `[EMAIL_SEND_FINAL_FAILURE] Email send process failed after all retries. Total time: ${totalTime}ms`,
+    );
     return false;
   }
 
@@ -283,6 +399,10 @@ export class EmailService {
     port: number,
     secure: boolean,
   ): nodemailer.Transporter {
+    this.logger.log(
+      `[CREATE_TRANSPORTER] Building transport options. Host: ${this.smtpHost}, Port: ${port}, Secure: ${secure}, Production: ${this.isProduction}`,
+    );
+
     const transportOptions: any = {
       host: this.smtpHost,
       port: port,
@@ -307,10 +427,17 @@ export class EmailService {
       logger: !this.isProduction,
     };
 
+    this.logger.log(
+      `[CREATE_TRANSPORTER] Timeout settings: connectionTimeout=${transportOptions.connectionTimeout}ms, greetingTimeout=${transportOptions.greetingTimeout}ms, socketTimeout=${transportOptions.socketTimeout}ms, dnsTimeout=${transportOptions.dnsTimeout}ms`,
+    );
+
     // Add STARTTLS requirement only for port 587
     // According to docs: secure: false doesn't mean plaintext - STARTTLS is used automatically
     if (!secure && port === 587) {
       transportOptions.requireTLS = true; // Force STARTTLS
+      this.logger.log(
+        `[CREATE_TRANSPORTER] Added requireTLS: true for port 587 (STARTTLS)`,
+      );
     }
 
     // Add TLS options for SSL (port 465) - Critical for production
@@ -320,9 +447,21 @@ export class EmailService {
         rejectUnauthorized: false, // Do not fail on invalid certs (from Nodemailer docs)
         minVersion: 'TLSv1.2',
       };
+      this.logger.log(
+        `[CREATE_TRANSPORTER] Added TLS options for port 465: rejectUnauthorized=false, minVersion=TLSv1.2`,
+      );
     }
 
-    return nodemailer.createTransport(transportOptions);
+    this.logger.log(
+      `[CREATE_TRANSPORTER] Transport options configured. Auth user: ${this.smtpUser ? this.smtpUser.substring(0, 3) + '***' : 'NOT SET'}, Password length: ${this.smtpPassword ? this.smtpPassword.length : 0}`,
+    );
+
+    const transporter = nodemailer.createTransport(transportOptions);
+    this.logger.log(
+      `[CREATE_TRANSPORTER] Nodemailer transporter created successfully`,
+    );
+
+    return transporter;
   }
 
   /**
