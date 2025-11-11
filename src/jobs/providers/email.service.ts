@@ -74,7 +74,8 @@ export class EmailService {
 
   /**
    * Initialize or recreate transporter with optimal settings
-   * Based on Stack Overflow solution for production environments
+   * Based on Nodemailer official documentation: https://nodemailer.com/smtp
+   * This is used only for the initial transporter in constructor
    */
   private initializeTransporter(port: number, secure: boolean): void {
     const transportOptions: any = {
@@ -85,12 +86,14 @@ export class EmailService {
         user: this.smtpUser,
         pass: this.smtpPassword,
       },
-      // Production-optimized timeouts
-      connectionTimeout: this.isProduction ? 90000 : 60000, // 90s for production, 60s for dev
-      greetingTimeout: this.isProduction ? 90000 : 60000,
-      socketTimeout: this.isProduction ? 90000 : 60000,
-      dnsTimeout: this.isProduction ? 60000 : 30000, // 60s for production, 30s for dev
-      // Disable connection pooling for production compatibility
+      // Connection timeouts based on Nodemailer defaults
+      // Defaults: connectionTimeout: 120000ms, greetingTimeout: 30000ms,
+      // socketTimeout: 600000ms, dnsTimeout: 30000ms
+      connectionTimeout: this.isProduction ? 120000 : 60000, // 120s (default) for production
+      greetingTimeout: 30000, // 30s (default)
+      socketTimeout: this.isProduction ? 600000 : 300000, // 600s (default) for production
+      dnsTimeout: 30000, // 30s (default)
+      // Disable connection pooling - single connection pattern
       pool: false,
       // Debug options (development only)
       debug: !this.isProduction,
@@ -102,11 +105,11 @@ export class EmailService {
       transportOptions.requireTLS = true;
     }
 
-    // Add TLS options for SSL (port 465) - Critical for production
-    // Based on Stack Overflow solution: rejectUnauthorized: false
+    // Add TLS options for SSL (port 465)
+    // Based on Nodemailer docs: "Allow self-signed certificates"
     if (secure && port === 465) {
       transportOptions.tls = {
-        rejectUnauthorized: false, // Important for production environments
+        rejectUnauthorized: false, // Do not fail on invalid certs
         minVersion: 'TLSv1.2',
       };
     }
@@ -145,12 +148,22 @@ export class EmailService {
 
   /**
    * Send email using SMTP
+   * For production: Creates a new transporter for each email to avoid connection issues
    */
   async sendEmail(options: EmailOptions, retries = 2): Promise<boolean> {
     const maxRetries = retries;
 
     for (let attempt = 0; attempt <= maxRetries; attempt++) {
+      // Create a new transporter for each attempt (especially important for production)
+      // This ensures a clean connection state and avoids connection pooling issues
+      const smtpPort = this.isProduction ? 465 : 587;
+      const smtpSecure = this.isProduction ? true : false;
+      let transporter: nodemailer.Transporter | null = null;
+
       try {
+        // Create fresh transporter for this attempt
+        transporter = this.createTransporter(smtpPort, smtpSecure);
+
         // Use hardcoded SMTP configuration (from .env)
         const fromEmail = 'ericshin8134@gmail.com';
         // Use fromName from options if provided, otherwise use default
@@ -180,7 +193,7 @@ export class EmailService {
         // Based on Stack Overflow solution for production nodemailer issues
         const info = await new Promise<nodemailer.SentMessageInfo>(
           (resolve, reject) => {
-            this.transporter.sendMail(mailOptions, (err, info) => {
+            transporter!.sendMail(mailOptions, (err, info) => {
               if (err) {
                 reject(err);
               } else {
@@ -193,14 +206,31 @@ export class EmailService {
         this.logger.log(
           `Email sent successfully to ${options.to}: ${info.messageId}`,
         );
+
+        // Close transporter after successful send
+        try {
+          transporter.close();
+        } catch {
+          // Ignore close errors
+        }
+
         return true;
       } catch (error) {
+        // Always close transporter on error
+        if (transporter) {
+          try {
+            transporter.close();
+          } catch {
+            // Ignore close errors
+          }
+        }
+
         const errorMessage =
           error instanceof Error ? error.message : String(error);
         const errorCode = (error as any)?.code;
         const errorCommand = (error as any)?.command;
 
-        // If it's a connection timeout and we have retries left, recreate transporter and retry
+        // If it's a connection timeout and we have retries left, wait and retry
         if (
           (errorCode === 'ETIMEDOUT' ||
             errorCode === 'ECONNRESET' ||
@@ -209,21 +239,8 @@ export class EmailService {
         ) {
           const waitTime = (attempt + 1) * 3000; // Exponential backoff: 3s, 6s
           this.logger.warn(
-            `Email send attempt ${attempt + 1} failed with ${errorCode}, recreating transporter and retrying in ${waitTime}ms...`,
+            `Email send attempt ${attempt + 1} failed with ${errorCode}, retrying in ${waitTime}ms...`,
           );
-
-          // Recreate transporter for connection issues
-          try {
-            this.transporter.close();
-          } catch {
-            // Ignore close errors
-          }
-
-          // Recreate transporter with production-optimized configuration
-          // Production uses port 465 (SSL), development uses port 587 (STARTTLS)
-          const smtpPort = this.isProduction ? 465 : 587;
-          const smtpSecure = this.isProduction ? true : false;
-          this.initializeTransporter(smtpPort, smtpSecure);
 
           await new Promise((resolve) => setTimeout(resolve, waitTime));
           continue;
@@ -244,8 +261,8 @@ export class EmailService {
         // Log SMTP configuration status (environment-aware)
         this.logger.error('SMTP Configuration Check:', {
           host: this.smtpHost,
-          port: this.isProduction ? 465 : 587,
-          secure: this.isProduction,
+          port: smtpPort,
+          secure: smtpSecure,
           environment: this.isProduction ? 'PRODUCTION' : 'DEVELOPMENT',
           userSet: !!this.smtpUser,
           passwordSet: !!this.smtpPassword,
@@ -255,6 +272,57 @@ export class EmailService {
 
     // All retries failed
     return false;
+  }
+
+  /**
+   * Create a new transporter instance
+   * Used for creating fresh connections in production
+   * Based on Nodemailer official documentation: https://nodemailer.com/smtp
+   */
+  private createTransporter(
+    port: number,
+    secure: boolean,
+  ): nodemailer.Transporter {
+    const transportOptions: any = {
+      host: this.smtpHost,
+      port: port,
+      secure: secure, // true for port 465 (SSL), false for port 587 (STARTTLS)
+      auth: {
+        user: this.smtpUser,
+        pass: this.smtpPassword,
+      },
+      // Connection timeouts based on Nodemailer defaults
+      // Defaults: connectionTimeout: 120000ms, greetingTimeout: 30000ms,
+      // socketTimeout: 600000ms, dnsTimeout: 30000ms
+      // Production uses longer timeouts for network latency
+      connectionTimeout: this.isProduction ? 120000 : 60000, // 120s (default) for production, 60s for dev
+      greetingTimeout: this.isProduction ? 30000 : 30000, // 30s (default) for both
+      socketTimeout: this.isProduction ? 600000 : 300000, // 600s (default) for production, 300s for dev
+      dnsTimeout: this.isProduction ? 30000 : 30000, // 30s (default) for both
+      // Disable connection pooling - each email gets a fresh connection
+      // This follows the "Single connection" pattern from Nodemailer docs
+      pool: false,
+      // Debug options (development only)
+      debug: !this.isProduction,
+      logger: !this.isProduction,
+    };
+
+    // Add STARTTLS requirement only for port 587
+    // According to docs: secure: false doesn't mean plaintext - STARTTLS is used automatically
+    if (!secure && port === 587) {
+      transportOptions.requireTLS = true; // Force STARTTLS
+    }
+
+    // Add TLS options for SSL (port 465) - Critical for production
+    // Based on Nodemailer docs example: "Allow self-signed certificates"
+    if (secure && port === 465) {
+      transportOptions.tls = {
+        rejectUnauthorized: false, // Do not fail on invalid certs (from Nodemailer docs)
+        minVersion: 'TLSv1.2',
+      };
+    }
+
+    return nodemailer.createTransport(transportOptions);
   }
 
   /**
