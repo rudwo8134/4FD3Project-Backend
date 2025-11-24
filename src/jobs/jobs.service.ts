@@ -176,8 +176,18 @@ export class JobsService {
       this.logger.warn('No WHERE conditions generated for search');
     }
 
-    qb.orderBy('score', 'DESC');
-    qb.addOrderBy('jp.created_at', 'DESC');
+    // Get total count before pagination for proper pagination support
+    // Create a separate count query builder
+    const countQb = this.jobPostingRepo.createQueryBuilder('jp');
+    if (allWhereConditions.length > 0) {
+      const whereSql = allWhereConditions.join(' AND ');
+      countQb.where(whereSql).setParameters(whereParams);
+    }
+    const totalCount = await countQb.getCount();
+
+    // Order by created_at DESC first (latest first), then by score DESC
+    qb.orderBy('jp.created_at', 'DESC');
+    qb.addOrderBy('score', 'DESC');
     qb.limit(limit);
     qb.offset(offset);
 
@@ -188,7 +198,7 @@ export class JobsService {
     const { entities, raw } = await qb.getRawAndEntities();
 
     this.logger.debug(
-      `Search results: found ${entities.length} entities, isEmailAvailable filter: ${isEmailAvailable}`,
+      `Search results: found ${entities.length} entities (total: ${totalCount}), isEmailAvailable filter: ${isEmailAvailable}`,
     );
 
     const results = entities.map((e, i) => {
@@ -203,7 +213,7 @@ export class JobsService {
       } as Record<string, any>;
     });
 
-    return { count: results.length, results };
+    return { count: totalCount, results };
   }
 
   async listBoardJobs(boardToken: string, content?: boolean) {
