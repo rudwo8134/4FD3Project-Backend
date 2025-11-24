@@ -185,9 +185,9 @@ export class JobsService {
     }
     const totalCount = await countQb.getCount();
 
-    // Order by created_at DESC first (latest first), then by score DESC (highest score within same date)
-    qb.addOrderBy('score', 'DESC');
-    qb.orderBy('jp.created_at', 'DESC');
+    // Order by score DESC first (highest score first), then by created_at DESC (latest within same score)
+    qb.orderBy('score', 'DESC');
+    qb.addOrderBy('jp.created_at', 'DESC');
     qb.limit(limit);
     qb.offset(offset);
 
