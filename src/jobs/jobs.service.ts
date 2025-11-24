@@ -8,6 +8,7 @@ import { ImportService } from './providers/import.service';
 import { EmailService } from './providers/email.service';
 import { JobPosting } from '../entities/job-posting.entity';
 import { expandTokens } from './search/synonyms';
+import { randomUUID } from 'crypto';
 
 export interface JobSearchParams {
   query?: string;
@@ -15,9 +16,22 @@ export interface JobSearchParams {
   isEmailAvailable?: boolean;
 }
 
+interface FixScoresStatus {
+  id: string;
+  total: number;
+  processed: number;
+  updated: number;
+  skipped: number;
+  failed: number;
+  done: boolean;
+  startedAt: number;
+  lastError?: string;
+}
+
 @Injectable()
 export class JobsService {
   private readonly logger = new Logger(JobsService.name);
+  private readonly fixScoresStatuses = new Map<string, FixScoresStatus>();
 
   constructor(
     @InjectRepository(JobPosting)
@@ -471,5 +485,168 @@ export class JobsService {
         : [],
       results,
     };
+  }
+
+  /**
+   * Start fixing decimal scores to integer scores
+   * Finds records with 0 < score < 1 and multiplies by 100
+   * Processes 100 records at a time to avoid system overload
+   */
+  startFixScores() {
+    const id = randomUUID();
+    const status: FixScoresStatus = {
+      id,
+      total: 0,
+      processed: 0,
+      updated: 0,
+      skipped: 0,
+      failed: 0,
+      done: false,
+      startedAt: Date.now(),
+    };
+    this.fixScoresStatuses.set(id, status);
+
+    // Start async processing
+    void this.processFixScores(id);
+
+    return { fixScoresId: id };
+  }
+
+  /**
+   * Process score fixing in batches of 100
+   */
+  private async processFixScores(id: string) {
+    const status = this.fixScoresStatuses.get(id);
+    if (!status) {
+      this.logger.error(`Fix scores status not found: ${id}`);
+      return;
+    }
+
+    const batchSize = 100;
+    let offset = 0;
+    let hasMore = true;
+
+    try {
+      // First, get total count of records with decimal scores
+      // Handle both numeric and string representations
+      const totalCount = await this.jobPostingRepo
+        .createQueryBuilder('jp')
+        .where(
+          "jp.data->>'Suitability Score' IS NOT NULL AND " +
+            "CAST(jp.data->>'Suitability Score' AS NUMERIC) > 0 AND " +
+            "CAST(jp.data->>'Suitability Score' AS NUMERIC) < 1",
+        )
+        .getCount();
+
+      status.total = totalCount;
+      this.logger.log(
+        `Found ${totalCount} records with decimal scores for fix ${id}`,
+      );
+
+      while (hasMore) {
+        // Get batch of records with decimal scores
+        const records = await this.jobPostingRepo
+          .createQueryBuilder('jp')
+          .where(
+            "jp.data->>'Suitability Score' IS NOT NULL AND " +
+              "CAST(jp.data->>'Suitability Score' AS NUMERIC) > 0 AND " +
+              "CAST(jp.data->>'Suitability Score' AS NUMERIC) < 1",
+          )
+          .orderBy('jp.created_at', 'ASC')
+          .skip(offset)
+          .take(batchSize)
+          .getMany();
+
+        if (records.length === 0) {
+          hasMore = false;
+          break;
+        }
+
+        // Process each record
+        const recordsToUpdate: JobPosting[] = [];
+
+        for (const record of records) {
+          try {
+            const scoreValue = record.data?.['Suitability Score'];
+            if (scoreValue === undefined || scoreValue === null) {
+              status.skipped++;
+              continue;
+            }
+
+            // Parse score (handle both number and string)
+            let score: number;
+            if (typeof scoreValue === 'number') {
+              score = scoreValue;
+            } else if (typeof scoreValue === 'string') {
+              score = parseFloat(scoreValue);
+              if (isNaN(score)) {
+                status.skipped++;
+                continue;
+              }
+            } else {
+              status.skipped++;
+              continue;
+            }
+
+            // Check if score is in decimal range (0 < score < 1)
+            if (score > 0 && score < 1) {
+              // Multiply by 100 and round to integer
+              const newScore = Math.round(score * 100);
+              record.data['Suitability Score'] = newScore;
+              recordsToUpdate.push(record);
+            } else {
+              status.skipped++;
+            }
+          } catch (err: any) {
+            status.failed++;
+            this.logger.warn(
+              `Failed to process record ${record.job_posting_id}: ${err?.message}`,
+            );
+          }
+        }
+
+        // Batch update
+        if (recordsToUpdate.length > 0) {
+          await this.jobPostingRepo.save(recordsToUpdate);
+          status.updated += recordsToUpdate.length;
+          this.logger.debug(
+            `Updated ${recordsToUpdate.length} records in batch (offset: ${offset})`,
+          );
+        }
+
+        status.processed += records.length;
+        offset += batchSize;
+
+        // Check if we're done
+        if (records.length < batchSize || status.processed >= status.total) {
+          hasMore = false;
+        }
+
+        // Small delay to avoid overwhelming the system
+        if (hasMore) {
+          await new Promise((resolve) => setTimeout(resolve, 100));
+        }
+      }
+
+      status.done = true;
+      this.logger.log(
+        `Fix scores ${id} completed: updated=${status.updated} skipped=${status.skipped} failed=${status.failed}`,
+      );
+    } catch (err: any) {
+      status.done = true;
+      status.lastError = err?.message ?? String(err);
+      this.logger.error(`Fix scores error for ${id}:`, err?.stack);
+    }
+  }
+
+  /**
+   * Get the status of a score fixing operation
+   */
+  getFixScoresStatus(id: string): FixScoresStatus | { error: string } {
+    const status = this.fixScoresStatuses.get(id);
+    if (!status) {
+      return { error: 'not_found' };
+    }
+    return status;
   }
 }

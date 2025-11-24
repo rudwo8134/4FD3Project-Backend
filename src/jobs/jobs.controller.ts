@@ -87,6 +87,25 @@ export class JobsController {
     return this.jobsService.getImportStatus(id);
   }
 
+  @Post('fix-scores')
+  @ApiOperation({
+    summary: 'Fix decimal scores to integer scores',
+    description:
+      'Find job postings with decimal scores (0 < score < 1) and convert them to integer scores by multiplying by 100. Processes 100 records at a time.',
+  })
+  async fixScores() {
+    return this.jobsService.startFixScores();
+  }
+
+  @Get('fix-scores/:id/status')
+  @ApiOperation({
+    summary: 'Get score fix status',
+    description: 'Get the status of a score fixing operation',
+  })
+  async fixScoresStatus(@Param('id') id: string): Promise<any> {
+    return this.jobsService.getFixScoresStatus(id);
+  }
+
   @Post('apply')
   @UseInterceptors(FilesInterceptor('files'))
   @ApiOperation({
