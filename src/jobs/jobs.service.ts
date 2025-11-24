@@ -162,6 +162,12 @@ export class JobsService {
       }
     }
 
+    // Filter out results with score 0 if query is provided (only show relevant results)
+    if (rawQuery && scoreExprParts.length > 0) {
+      const scoreExpr = scoreExprParts.join(' + ');
+      allWhereConditions.push(`(${scoreExpr}) > 0`);
+    }
+
     // Apply all WHERE conditions
     if (allWhereConditions.length > 0) {
       const whereSql = allWhereConditions.join(' AND ');
@@ -185,9 +191,9 @@ export class JobsService {
     }
     const totalCount = await countQb.getCount();
 
-    // Order by score DESC first (search relevance first), then by created_at DESC (latest first)
-    qb.orderBy('score', 'DESC');
-    qb.addOrderBy('jp.created_at', 'DESC');
+    // Order by created_at DESC first (latest first), then by score DESC (highest score within same date)
+    qb.orderBy('jp.created_at', 'DESC');
+    qb.addOrderBy('score', 'DESC');
     qb.limit(limit);
     qb.offset(offset);
 
