@@ -8,6 +8,247 @@ import { ImportService } from './providers/import.service';
 import { EmailService } from './providers/email.service';
 import { JobPosting } from '../entities/job-posting.entity';
 import { expandTokens } from './search/synonyms';
+
+// Available job titles from frontend
+const JOB_TITLES = [
+  // Software & Engineering
+  'Software Engineer',
+  'Frontend Developer',
+  'Backend Developer',
+  'Full Stack Developer',
+  'DevOps Engineer',
+  'Mobile Developer',
+  'iOS Developer',
+  'Android Developer',
+  'Data Engineer',
+  'Cloud Engineer',
+  'Site Reliability Engineer',
+  'QA Engineer',
+  'Systems Architect',
+  'Embedded Systems Engineer',
+  'Game Developer',
+  'Machine Learning Engineer',
+  // Data & Analytics
+  'Data Scientist',
+  'Data Analyst',
+  'Business Analyst',
+  'Business Intelligence Developer',
+  'AI Researcher',
+  'Statistician',
+  'Database Administrator',
+  // Product & Design
+  'Product Manager',
+  'Project Manager',
+  'Product Owner',
+  'Scrum Master',
+  'UX Designer',
+  'UI Designer',
+  'Product Designer',
+  'Graphic Designer',
+  'Web Designer',
+  'Art Director',
+  'Creative Director',
+  // Marketing & Sales
+  'Marketing Manager',
+  'Social Media Manager',
+  'Content Strategist',
+  'SEO Specialist',
+  'Digital Marketing Specialist',
+  'Sales Representative',
+  'Account Manager',
+  'Account Executive',
+  'Customer Success Manager',
+  'Sales Engineer',
+  // IT & Support
+  'IT Support Specialist',
+  'System Administrator',
+  'Network Engineer',
+  'Cybersecurity Analyst',
+  'Information Security Manager',
+  'Help Desk Technician',
+  // HR & Operations
+  'Human Resources Manager',
+  'Recruiter',
+  'Talent Acquisition Specialist',
+  'Operations Manager',
+  'Office Manager',
+  'Executive Assistant',
+  // Finance
+  'Financial Analyst',
+  'Accountant',
+  'Auditor',
+  'Controller',
+  'Finance Manager',
+  // Healthcare & Nursing
+  'Practical Nurse',
+  'Registered Nurse',
+  'Nurse Practitioner',
+  'Nurse Manager',
+  'Nurse Educator',
+  'Nurse Administrator',
+  'Nurse Consultant',
+  'Nurse Director',
+  'Nurse Leader',
+  'Nurse Specialist',
+];
+
+/**
+ * Find related job titles based on search query
+ * Uses keyword matching to find relevant job titles
+ */
+function findRelatedJobTitles(query: string): string[] {
+  const queryLower = query.toLowerCase().trim();
+  const related: string[] = [];
+
+  // Direct match
+  for (const title of JOB_TITLES) {
+    if (title.toLowerCase().includes(queryLower)) {
+      related.push(title);
+    }
+  }
+
+  // Keyword-based matching
+  const keywords = queryLower.split(/\s+/);
+  for (const title of JOB_TITLES) {
+    const titleLower = title.toLowerCase();
+    // Check if any keyword matches significant parts of the title
+    for (const keyword of keywords) {
+      if (keyword.length >= 3 && titleLower.includes(keyword)) {
+        if (!related.includes(title)) {
+          related.push(title);
+        }
+      }
+    }
+  }
+
+  // Special mappings for common searches
+  const specialMappings: Record<string, string[]> = {
+    software: [
+      'Software Engineer',
+      'Frontend Developer',
+      'Backend Developer',
+      'Full Stack Developer',
+      'DevOps Engineer',
+      'Mobile Developer',
+      'iOS Developer',
+      'Android Developer',
+      'Data Engineer',
+      'Cloud Engineer',
+      'Site Reliability Engineer',
+      'QA Engineer',
+      'Systems Architect',
+      'Embedded Systems Engineer',
+      'Game Developer',
+      'Machine Learning Engineer',
+    ],
+    engineer: [
+      'Software Engineer',
+      'DevOps Engineer',
+      'Data Engineer',
+      'Cloud Engineer',
+      'Site Reliability Engineer',
+      'QA Engineer',
+      'Systems Architect',
+      'Embedded Systems Engineer',
+      'Machine Learning Engineer',
+      'Sales Engineer',
+      'Network Engineer',
+    ],
+    developer: [
+      'Frontend Developer',
+      'Backend Developer',
+      'Full Stack Developer',
+      'Mobile Developer',
+      'iOS Developer',
+      'Android Developer',
+      'Game Developer',
+      'Business Intelligence Developer',
+    ],
+    frontend: [
+      'Frontend Developer',
+      'Full Stack Developer',
+      'Web Designer',
+      'UI Designer',
+      'UX Designer',
+    ],
+    backend: [
+      'Backend Developer',
+      'Full Stack Developer',
+      'Software Engineer',
+      'Data Engineer',
+    ],
+    nurse: [
+      'Practical Nurse',
+      'Registered Nurse',
+      'Nurse Practitioner',
+      'Nurse Manager',
+      'Nurse Educator',
+      'Nurse Administrator',
+      'Nurse Consultant',
+      'Nurse Director',
+      'Nurse Leader',
+      'Nurse Specialist',
+    ],
+    nursing: [
+      'Practical Nurse',
+      'Registered Nurse',
+      'Nurse Practitioner',
+      'Nurse Manager',
+      'Nurse Educator',
+      'Nurse Administrator',
+      'Nurse Consultant',
+      'Nurse Director',
+      'Nurse Leader',
+      'Nurse Specialist',
+    ],
+    data: [
+      'Data Scientist',
+      'Data Analyst',
+      'Data Engineer',
+      'Business Analyst',
+      'Business Intelligence Developer',
+      'Statistician',
+      'Database Administrator',
+    ],
+    product: ['Product Manager', 'Product Owner', 'Product Designer'],
+    design: [
+      'UX Designer',
+      'UI Designer',
+      'Product Designer',
+      'Graphic Designer',
+      'Web Designer',
+      'Art Director',
+      'Creative Director',
+    ],
+    marketing: [
+      'Marketing Manager',
+      'Social Media Manager',
+      'Content Strategist',
+      'SEO Specialist',
+      'Digital Marketing Specialist',
+    ],
+    sales: [
+      'Sales Representative',
+      'Account Manager',
+      'Account Executive',
+      'Customer Success Manager',
+      'Sales Engineer',
+    ],
+  };
+
+  // Check special mappings
+  for (const [key, titles] of Object.entries(specialMappings)) {
+    if (queryLower.includes(key)) {
+      for (const title of titles) {
+        if (!related.includes(title)) {
+          related.push(title);
+        }
+      }
+    }
+  }
+
+  return related;
+}
 import { randomUUID } from 'crypto';
 
 export interface JobSearchParams {
@@ -57,6 +298,12 @@ export class JobsService {
     if (!rawQuery && !rawLocation && isEmailAvailable === undefined) {
       return { count: 0, results: [] };
     }
+
+    // Find related job titles based on search query
+    const relatedJobTitles = rawQuery ? findRelatedJobTitles(rawQuery) : [];
+    this.logger.debug(
+      `Found ${relatedJobTitles.length} related job titles for query: ${rawQuery}`,
+    );
 
     // Tokenize query and expand synonyms for broader matching
     const baseTokens = rawQuery
@@ -120,23 +367,42 @@ export class JobsService {
       'score',
     );
 
-    // WHERE: match any token in any field OR phrase in title; and if location provided, also require location match
+    // WHERE: Require job_title match for relevance to avoid irrelevant results
+    // This ensures "software engineer" won't match "nurse" jobs even if job_summary contains "software"
     const whereClauses: string[] = [];
     const whereParams: Record<string, any> = {};
 
+    // Build job_title matching conditions (REQUIRED - job must have relevant title)
+    const jobTitleMatches: string[] = [];
+
     if (rawQuery) {
       whereParams['qPhraseWhere'] = `%${rawQuery}%`;
-      whereClauses.push(`(jp.data->>'job_title') ILIKE :qPhraseWhere`);
+      jobTitleMatches.push(`(jp.data->>'job_title') ILIKE :qPhraseWhere`);
     }
 
+    // Add related job titles to job_title matching (REQUIRED)
+    if (relatedJobTitles.length > 0) {
+      relatedJobTitles.forEach((title, idx) => {
+        const param = `relatedTitle${idx}`;
+        whereParams[param] = `%${title}%`;
+        jobTitleMatches.push(`(jp.data->>'job_title') ILIKE :${param}`);
+      });
+    }
+
+    // Add token matches to job_title (REQUIRED)
     tokens.forEach((t, idx) => {
-      const p = `wTok${idx}`;
+      const p = `wTokTitle${idx}`;
       whereParams[p] = `%${t}%`;
-      whereClauses.push(`(jp.data->>'job_title') ILIKE :${p}`);
-      whereClauses.push(`(jp.data->>'job_function') ILIKE :${p}`);
-      whereClauses.push(`(jp.data->>'job_summary') ILIKE :${p}`);
-      whereClauses.push(`(jp.data->>'job_location') ILIKE :${p}`);
+      jobTitleMatches.push(`(jp.data->>'job_title') ILIKE :${p}`);
     });
+
+    // REQUIRE at least one job_title match - this filters out irrelevant jobs
+    if (jobTitleMatches.length > 0) {
+      whereClauses.push(`(${jobTitleMatches.join(' OR ')})`);
+    } else if (rawQuery) {
+      // If no query provided, return empty (already handled above, but safety check)
+      return { count: 0, results: [] };
+    }
 
     // Add location filter to params if provided
     if (rawLocation) {
@@ -199,9 +465,13 @@ export class JobsService {
     }
     const totalCount = await countQb.getCount();
 
-    // Order by score DESC first (highest score first), then by created_at DESC (latest within same score)
-    qb.orderBy('score', 'DESC');
-    qb.addOrderBy('jp.created_at', 'DESC');
+    // Order by created_at DESC first (latest first), then by Suitability Score DESC (highest score within same date)
+    qb.orderBy('jp.created_at', 'DESC');
+    qb.addOrderBy(
+      "CAST(jp.data->>'Suitability Score' AS NUMERIC)",
+      'DESC',
+      'NULLS LAST',
+    );
     qb.limit(limit);
     qb.offset(offset);
 
@@ -217,10 +487,18 @@ export class JobsService {
 
     const results = entities.map((e, i) => {
       const score = Number(raw[i]?.score ?? 0);
+      const suitabilityScore = e.data?.['Suitability Score'];
+      const suitabilityScoreNum =
+        typeof suitabilityScore === 'number'
+          ? suitabilityScore
+          : typeof suitabilityScore === 'string'
+            ? parseFloat(suitabilityScore)
+            : null;
       return {
         id: e.id,
         job_posting_id: e.job_posting_id,
         score,
+        suitabilityScore: suitabilityScoreNum,
         isEmailAvailable: e.isEmailAvailable ?? false,
         resume_email: e.resume_email ?? null,
         ...e.data,
