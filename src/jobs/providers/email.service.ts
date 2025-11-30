@@ -23,7 +23,7 @@ export class EmailService {
 
   private smtpHost = 'smtp.gmail.com';
   private smtpUser = 'ericshin8134@gmail.com';
-  private smtpPassword = 'jefh dosi gdwo iych';
+  private smtpPassword = 'qggi muud atmq jzqm';
   private isProduction = false;
 
   constructor(private readonly configService: ConfigService) {
